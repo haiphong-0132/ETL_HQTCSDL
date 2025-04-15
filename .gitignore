@@ -1,0 +1,10 @@
+.env
+venv/
+products/rawData/
+.ipynb_checkpoints/
+__pycache__/
+*.py[cod]
+*.log
+.DS_Store
+Thumbs.db
+users/users.csv

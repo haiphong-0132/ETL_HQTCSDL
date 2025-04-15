@@ -1,0 +1,4 @@
+pandas==2.2.3
+pyodbc==5.2.0
+python-dotenv==1.1.0
+vn_fullname_generator==0.0.2
