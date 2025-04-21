@@ -103,7 +103,8 @@ def generate_random_date(start, end):
 
 def generate_random_user_status():
     status = ['active', 'inactive', 'banned']
-    return random.choice(status)
+    probability = [0.7, 0.2, 0.1]
+    return random.choices(status, weights=probability, k=1)[0]
 
 def fetch_addresses():
     conn = get_db_connection()
@@ -119,19 +120,18 @@ def generate_random_address(address_df):
 
     return f"{ward}, {district}, {province}"
 
-def generate_single_user(address_df):
+def generate_account(address_df):
     try:
+        username = generate_random_string(random.randint(5, 10))
+        password = generate_random_string( random.randint(8, 12))
         gender = random.randint(0, 1)
         name = generator.generate(gender)
         email = generate_email(name)
-        phone = generate_phone_number()
         status = generate_random_user_status()
-        username = generate_random_string(random.randint(5, 10))
-        password = generate_random_string( random.randint(8, 12))
         create_at = generate_random_date("2023-01-01", datetime.now().strftime("%Y-%m-%d"))
-        address = generate_random_address(address_df)
+        update_at = generate_random_date(create_at, datetime.now().strftime("%Y-%m-%d"))
 
-        return (name, username, password, gender, email, phone, address, create_at, status)
+        return (username, password, name, email, status, create_at, update_at)
     except Exception as e:
         print('Error generating user:', e)
         return None
@@ -139,7 +139,7 @@ def generate_single_user(address_df):
 def generate_users(n, address_df, max_workers=10):
     data = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(generate_single_user, address_df) for _ in range(n)]
+        futures = [executor.submit(generate_account, address_df) for _ in range(n)]
         for f in tqdm(as_completed(futures), total=n, desc="Generating user data", unit="record"):
             result = f.result()
             if result:
