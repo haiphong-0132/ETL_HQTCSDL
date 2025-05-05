@@ -1,6 +1,5 @@
 .env
 venv/
-products/rawData/
 .ipynb_checkpoints/
 __pycache__/
 *.py[cod]
