@@ -8,11 +8,19 @@ from tqdm import tqdm
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from prefect import flow, task
-
+from prefect.cache_policies import NONE as NO_CACHE
 load_dotenv()
 
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+
 RANDOM_SEED = 42
+FIXED_CURRENT_DATE_AND_TIME = "2025-06-20 00:00:00"
+FIXED_CURRENT_DATE = datetime.strptime(FIXED_CURRENT_DATE_AND_TIME, '%Y-%m-%d %H:%M:%S').strftime('%Y-%m-%d')
+
 DB_NAME = os.getenv("DB_NAME")
+
+random_generator = random.Random(RANDOM_SEED)
 
 def get_db_connection(DB_NAME:str):
     conn = pyodbc.connect(
@@ -27,7 +35,15 @@ def get_db_connection(DB_NAME:str):
     return conn
 
 def get_md5_hash(row: pd.Series):
-    str_row = row.astype(str).str.cat(sep=' ')
+    standardized_values = []
+    for val in row:
+        if pd.isna(val):
+            standardized_values.append('')
+        elif isinstance(val, float):
+            standardized_values.append(f"{val:.6f}")
+        else:
+            standardized_values.append(str(val))
+    str_row = ' '.join(standardized_values)
     hash_object = hashlib.md5()
     hash_object.update(str_row.encode('utf-8'))
     return hash_object.hexdigest()
@@ -139,7 +155,7 @@ def extract_options(versions: str):
 
     return options
 
-def random_date(start_date: str, end_date: str = datetime.now().strftime('%Y-%m-%d')):
+def random_date(start_date: str, end_date: str = FIXED_CURRENT_DATE_AND_TIME):
     try:
         start_date = datetime.strptime(start_date, '%Y-%m-%d')
     except ValueError:
@@ -152,12 +168,12 @@ def random_date(start_date: str, end_date: str = datetime.now().strftime('%Y-%m-
 
 
     delta = end_date - start_date
-    random_days = random.randint(0, delta.days)
+    random_days = random_generator.randint(0, delta.days)
     random_date = start_date + timedelta(days=random_days)
 
     return random_date.strftime('%Y-%m-%d %H:%M:%S')
 
-def check_status(start_date: str, end_date: str, current_date: str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')):
+def check_status(start_date: str, end_date: str, current_date: str = FIXED_CURRENT_DATE_AND_TIME):
     start_date = datetime.strptime(start_date, '%Y-%m-%d %H:%M:%S')
     end_date = datetime.strptime(end_date, '%Y-%m-%d %H:%M:%S')
 
@@ -189,7 +205,7 @@ def read_product_csv_file():
     }
 
     product_dataframes = {
-        name: pd.read_csv(f'./rawData/products/{filename}', encoding='utf-8')
+        name: pd.read_csv(os.path.join(current_dir, "rawData", "products", filename), encoding='utf-8')
         for name, filename in product_file_name.items()
     }
 
@@ -298,6 +314,9 @@ def recategorize_product(product_dataframes: dict[str, pd.DataFrame]):
         ignore_index=True
     )
 
+    products.sort_values(by=['Id'], inplace=True)
+    products.reset_index(drop=True, inplace=True)
+
     products.drop_duplicates(subset=['Id'], inplace=True)
 
     return products
@@ -307,13 +326,16 @@ def create_category_df(products: pd.DataFrame):
     category_rows = []
     for index, row in enumerate(products['Danh mục'].unique()):
         category_rows.append({
-            'id': index + 1,
+            'id': '',
             'name': row,
         })
     
     category_df = pd.DataFrame(category_rows)
 
-    category_df['hash'] = category_df.apply(get_md5_hash, axis=1)
+    category_df['id'] = category_df.drop(columns=['id']).apply(get_md5_hash, axis=1)
+
+    category_df.sort_values(by='id', inplace=True)
+    category_df.reset_index(drop=True, inplace=True)
 
     return category_df
 
@@ -344,32 +366,34 @@ def create_attribute_df(products: pd.DataFrame):
 
     for index, (name, _) in enumerate(attributes):
         attribute_rows.append({
-            'id': index + 1,
+            'id': '',
             'name': name,
         })
 
     attribute_df = pd.DataFrame(attribute_rows)
 
-    attribute_df['hash'] = attribute_df.apply(get_md5_hash, axis=1)
+    attribute_df['id'] = attribute_df.drop(columns=['id']).apply(get_md5_hash, axis=1)
+   
+    attribute_df.sort_values(by='id', inplace=True)
+    attribute_df.reset_index(drop=True, inplace=True)
 
-    attribute_rows = []
-
-    attribute_value_id_counter = 1
+    attribute_value_rows = []
 
     for index, (name, values) in enumerate(attributes):
         for value in values:
             
-            attribute_rows.append({
-                'id': attribute_value_id_counter,
-                'attribute_id': index + 1,
+            attribute_value_rows.append({
+                'id': '',
+                'attribute_id': get_md5_hash(pd.Series({'name': name})),
                 'value': value,
             })
 
-            attribute_value_id_counter += 1
+    attribute_value_df = pd.DataFrame(attribute_value_rows)
 
-    attribute_value_df = pd.DataFrame(attribute_rows)
+    attribute_value_df['id'] = attribute_value_df.drop(columns=['id']).apply(get_md5_hash, axis=1)
 
-    attribute_value_df['hash'] = attribute_value_df.apply(get_md5_hash, axis=1)
+    attribute_value_df.sort_values(by='id', inplace=True)
+    attribute_value_df.reset_index(drop=True, inplace=True)
 
     return {
         'attribute_df': attribute_df,
@@ -378,11 +402,12 @@ def create_attribute_df(products: pd.DataFrame):
 
 @task(name="Create product, product_variant and attribute_variant dataframe")
 def create_df_related_to_product(products: pd.DataFrame, category_dict: dict[str, int], attribute_dict: dict[str, int], attribute_value_dict: dict[str, int]):
-    def create_sku(brand, category, variant_id):
+    
+    def create_sku(brand, category, variant_id: str):
         brand = normalize_vietnamese_string(brand)
         category = normalize_vietnamese_string(category)
 
-        sku = f"{brand[:2].upper()}-{''.join(map(lambda x: x[0].upper(), category.split()))}-{variant_id}"
+        sku = f"{brand[:2].upper()}-{''.join(map(lambda x: x[0].upper(), category.split()))}-{variant_id.upper()}"
 
         return sku
 
@@ -390,7 +415,7 @@ def create_df_related_to_product(products: pd.DataFrame, category_dict: dict[str
         mean = 0.8
         std_dev = 0.05
 
-        original_price = price * random.gauss(mean, std_dev)
+        original_price = price * random_generator.gauss(mean, std_dev)
         original_price = max(original_price, price * 0.5)
 
         return round(original_price)
@@ -403,16 +428,22 @@ def create_df_related_to_product(products: pd.DataFrame, category_dict: dict[str
     product_variant_rows = []
     attribute_variant_rows = []
 
-    variant_id_counter = 1
-
     for index, row in tqdm(products.iterrows(), total=products.shape[0], desc="Processing products", unit="rows", colour="green"):
         versions = str(row['Phiên bản']).strip()
 
         options = extract_options(versions)
 
-        product_id = index
-
         category_id = category_dict[row['Danh mục']]
+
+        product_id = get_md5_hash(pd.Series({
+            'category_id': category_id,
+            'name': row['Tên sản phẩm'],
+            'description': row['Mô tả'],
+            'specification': row['Thông số kỹ thuật'],
+            'image_url': row['Hình ảnh'],
+            'brand': row['Thương hiệu'],
+        }))
+
 
         product_rows.append({
             'id': product_id,
@@ -424,11 +455,11 @@ def create_df_related_to_product(products: pd.DataFrame, category_dict: dict[str
             'brand': row['Thương hiệu'],
         })
         
-        random.seed(RANDOM_SEED)
+
         
         for option in options:
             
-            stock_quantity = random.randint(0, 120)
+            stock_quantity = random_generator.randint(0, 120)
             
             price = option['price']
 
@@ -436,12 +467,22 @@ def create_df_related_to_product(products: pd.DataFrame, category_dict: dict[str
 
             profit = price - original_price
 
-            sku = create_sku(row['Thương hiệu'], row['Danh mục'], variant_id_counter)
+            sku = create_sku(row['Thương hiệu'], row['Danh mục'], product_id[0:4])
 
-            sold_quantity = random.randint(stock_quantity // 2, stock_quantity) if stock_quantity >  10 else 0
+            sold_quantity = random_generator.randint(stock_quantity // 2, stock_quantity) if stock_quantity >  10 else 0
+
+            product_variant_id = get_md5_hash(pd.Series({
+                'product_id': product_id,
+                'price': price,
+                'original_price': original_price,
+                'profit': profit,
+                'sku': sku,
+                'stock_quantity': stock_quantity,
+                'sold_quantity': sold_quantity,
+            }))
 
             product_variant_rows.append({
-                'id': variant_id_counter,
+                'id': product_variant_id,
                 'product_id': product_id,
                 'price': price,
                 'original_price': original_price,
@@ -456,7 +497,7 @@ def create_df_related_to_product(products: pd.DataFrame, category_dict: dict[str
                 attrirbute_id = attribute_dict[attr]
 
                 attribute_variant_rows.append({
-                    'product_variant_id': variant_id_counter,
+                    'product_variant_id': product_variant_id,
                     'attribute_id': attrirbute_id,
                     'attribute_value_id': attribute_value_id,
                 })
@@ -466,19 +507,24 @@ def create_df_related_to_product(products: pd.DataFrame, category_dict: dict[str
                 tuple(sorted(zip(option['attrs'], option['values']))),
             )
 
-            option_to_variant_id[key] = variant_id_counter
+            option_to_variant_id[key] = product_variant_id
 
             old_product_id_to_new_product_id[int(row['Id'])] = product_id
-
-            variant_id_counter += 1
 
     product_df = pd.DataFrame(product_rows)
     product_variant_df = pd.DataFrame(product_variant_rows)
     attribute_variant_df = pd.DataFrame(attribute_variant_rows)
 
-    product_df['hash'] = product_df.apply(get_md5_hash, axis=1)
-    product_variant_df['hash'] = product_variant_df.apply(get_md5_hash, axis=1)
+    product_df.sort_values(by='id', inplace=True)
+    product_df.reset_index(drop=True, inplace=True)
+
+    product_variant_df.sort_values(by='id', inplace=True)
+    product_variant_df.reset_index(drop=True, inplace=True)
+
+
     attribute_variant_df['hash'] = attribute_variant_df.apply(get_md5_hash, axis=1)
+    attribute_variant_df.sort_values(by='product_variant_id', inplace=True)
+    attribute_variant_df.reset_index(drop=True, inplace=True)
 
     return {
         'product_df': product_df,
@@ -505,9 +551,9 @@ def read_feedback_csv_file():
         'tulanh_fb': 'tulanh_fb.csv',
         'pc_fb': 'maytinhdeban_fb.csv',
     }
-
+    
     feedback_dataframes = {
-        name: pd.read_csv(f'./rawData/feedback/{filename}', encoding='utf-8')
+        name: pd.read_csv(os.path.join(current_dir, "rawData", "feedback", filename), encoding='utf-8')
         for name, filename in feedback_file_name.items()
     }
 
@@ -522,7 +568,7 @@ def read_feedback_csv_file():
 
 @task(name="Create feedback dataframe")
 def create_feedback_df(feedbacks: pd.DataFrame, customer_df: pd.DataFrame, option_to_variant_id: dict, old_product_id_to_new_product_id: dict):
-    def mapping_option_to_variant_id(product_id: int, option: str):
+    def mapping_option_to_variant_id(product_id: str, option: str):
         if pd.isna(option) or option == '' or option == 'nan':
             return None
         
@@ -551,7 +597,9 @@ def create_feedback_df(feedbacks: pd.DataFrame, customer_df: pd.DataFrame, optio
     
     num_of_feedbacks = feedbacks.shape[0]
 
-    random.seed(RANDOM_SEED)
+    customer_df = customer_df.sort_values('id').reset_index(drop=True)
+
+    feedbacks = feedbacks.sort_values('feedback_id').reset_index(drop=True)
 
     customer_sample = customer_df.sample(num_of_feedbacks, random_state=RANDOM_SEED)
     customer_sample.reset_index(drop=True, inplace=True)
@@ -568,13 +616,11 @@ def create_feedback_df(feedbacks: pd.DataFrame, customer_df: pd.DataFrame, optio
 
     feedback_rows = []
 
-    random.seed(RANDOM_SEED)
 
     for index, row in tqdm(feedbacks.iterrows(), total=feedbacks.shape[0], desc='Processing feedbacks', unit="rows", colour='green'):
-        id = index + 1
 
         customer_id = old_customer_id_to_new_customer_id.get(
-            row['customer_id'], random.choice(customer_ids_sample)
+            row['customer_id'], random_generator.choice(customer_ids_sample)
         )
         
         old_customer_id_to_new_customer_id.setdefault(row['customer_id'], customer_id)
@@ -588,8 +634,17 @@ def create_feedback_df(feedbacks: pd.DataFrame, customer_df: pd.DataFrame, optio
         comment = row['content']
 
         created_at = random_date(
-            random.choice(account_created_at_sample), 
+            random_generator.choice(account_created_at_sample), 
         )
+
+        id = get_md5_hash(pd.Series({
+            'customer_id': customer_id,
+            'product_id': product_id,
+            'product_variant_id': variant_id,
+            'rating': rating,
+            'comment': comment,
+            'created_at': created_at,
+        }))
 
         feedback_row = {
             'id': id,
@@ -603,15 +658,15 @@ def create_feedback_df(feedbacks: pd.DataFrame, customer_df: pd.DataFrame, optio
 
         feedback_rows.append(feedback_row)
 
-        old_feedback_id_to_feedback.setdefault(int(row['feedback_id']), feedback_row)
+        old_feedback_id_to_feedback.setdefault(row['feedback_id'], feedback_row)
 
     feedback_df = pd.DataFrame(feedback_rows)
 
-    feedback_df['hash'] = feedback_df.apply(get_md5_hash, axis=1)
+    feedback_df.sort_values(by='id', inplace=True)
+    feedback_df.reset_index(drop=True, inplace=True)
 
     return {
         'feedback_df': feedback_df,
-        'old_customer_id_to_new_customer_id': old_customer_id_to_new_customer_id,
         'old_feedback_id_to_feedback': old_feedback_id_to_feedback,
     }
 
@@ -632,9 +687,9 @@ def read_feedback_response_csv_file():
         'tivi_response': 'tivi_fb_ma.csv',
         'tulanh_response': 'tulanh_fb_ma.csv',
     }
-
+    
     feedback_response_dataframes = {
-        name: pd.read_csv(f'./rawData/feedback_manager/{filename}', encoding='utf-8')
+        name: pd.read_csv(os.path.join(current_dir, "rawData", "feedback_manager", filename), encoding='utf-8')
         for name, filename in feedback_response_file_name.items()
     }
 
@@ -658,13 +713,10 @@ def create_feedback_response_df(feedback_responses: pd.DataFrame, service_custom
     
     feedback_response_rows = []
 
-    random.seed(RANDOM_SEED)
 
     for index, row in tqdm(feedback_responses.iterrows(), total=feedback_responses.shape[0], desc='Processing feedback responses', unit="rows", colour='green'):
         
-        id = index + 1
-        
-        manager_id = random.choice(service_customer_ids)
+        manager_id = random_generator.choice(service_customer_ids)
 
         customer_feedback = mapping_old_feedback_id_to_feedback(row['feedback_id'])
 
@@ -673,8 +725,15 @@ def create_feedback_response_df(feedback_responses: pd.DataFrame, service_custom
         comment = row['content']
 
         create_at = random_date(
-            customer_feedback['created_at'] if customer_feedback else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            customer_feedback['created_at'] if customer_feedback else FIXED_CURRENT_DATE_AND_TIME
         )
+
+        id = get_md5_hash(pd.Series({
+            'manager_id': manager_id,
+            'feedback_id': feedback_id,
+            'comment': comment,
+            'created_at': create_at,
+        }))
 
         feedback_response_rows.append({
             'id': id,
@@ -684,9 +743,10 @@ def create_feedback_response_df(feedback_responses: pd.DataFrame, service_custom
             'created_at': create_at,
         })
 
-        feedback_response_df = pd.DataFrame(feedback_response_rows)
+    feedback_response_df = pd.DataFrame(feedback_response_rows)
 
-        feedback_response_df['hash'] = feedback_response_df.apply(get_md5_hash, axis=1)
+    feedback_response_df.sort_values(by='id', inplace=True)
+    feedback_response_df.reset_index(drop=True, inplace=True)
 
     return feedback_response_df
 
@@ -708,9 +768,9 @@ def create_discount_df(product_variant_df: pd.DataFrame):
         
         if valid_discounts:
             if type == 'Percentage':
-                return round(random.choice(valid_discounts)['rate'], 3)
+                return round(random_generator.choice(valid_discounts)['rate'], 3)
             elif type == 'FixedAmount':
-                return round(random.choice(valid_discounts)['price'], 3)
+                return round(random_generator.choice(valid_discounts)['price'], 3)
         
         return round(price, 3)
 
@@ -728,32 +788,34 @@ def create_discount_df(product_variant_df: pd.DataFrame):
         'Giảm giá cực chất',
         'Giảm giá không thể bỏ qua',
         'Giảm giá cực đã',
-        'Giảm giá cực phê',
         'Giảm giá cực chất',
         'Giảm giá cực đỉnh',
         'Giảm giá cực chất lượng',
-        'Giảm giá cực chất lượng cao'
+        'Giảm giá siêu hời',
+        'Giảm giá siêu hấp dẫn',
+        'Giảm giá siêu chất',
+        'Giảm giá siêu đỉnh',
+        'Giảm giá ưu đãi',
     ]
 
     variant_id_to_voucher = {}
 
     discount_rows = []
 
+
     random_product_varriant = product_variant_df[['id', 'price', 'original_price', 'profit']].sample(n=1000, replace=False, random_state=RANDOM_SEED)
 
     for index, row in tqdm(random_product_varriant.iterrows(), total=random_product_varriant.shape[0], desc='Processing discounts', unit="rows", colour='green'):
         
-        id = index + 1
-
-        random_string = ''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=10))
+        random_string = ''.join(random_generator.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=10))
 
         product_variant_id = row['id']
 
         code = f"PTIT-{random_string}"
 
-        discount_name = random.choice(voucher_name)
+        discount_name = random_generator.choice(voucher_name)
 
-        discount_type = random.choice(types)
+        discount_type = random_generator.choice(types)
 
         discount_value = get_discount_value(discount_type, row['original_price'], row['price'])
 
@@ -762,6 +824,17 @@ def create_discount_df(product_variant_df: pd.DataFrame):
         end_date = random_date(start_date, '2025-12-31')
 
         status = check_status(start_date, end_date)
+
+        id = get_md5_hash(pd.Series({
+            'product_variant_id': product_variant_id,
+            'code': code,
+            'name': discount_name,
+            'type': discount_type,
+            'value': discount_value,
+            'status': status,
+            'start_date': start_date,
+            'end_date': end_date,
+        }))
 
         discount_rows.append({
             'id': id,
@@ -782,9 +855,10 @@ def create_discount_df(product_variant_df: pd.DataFrame):
             'end_date': end_date
         }
 
-        discount_df = pd.DataFrame(discount_rows)
+    discount_df = pd.DataFrame(discount_rows)
 
-        discount_df['hash'] = discount_df.apply(get_md5_hash, axis=1)
+    discount_df.sort_values(by='id', inplace=True)
+    discount_df.reset_index(drop=True, inplace=True)
 
     return {
         'discount_df': discount_df,
@@ -834,12 +908,12 @@ def create_df_related_to_order(feedback_df: pd.DataFrame, customer_df: pd.DataFr
 
     def random_order(payment_method=None, manage_order_status=None, order_status=None, payment_status=None):
         if payment_method is None:
-            payment_method = random.choice(['COD', 'Credit Card', 'Bank Transfer', 'PayPal'])
+            payment_method = random_generator.choice(['COD', 'Credit Card', 'Bank Transfer', 'PayPal'])
         
         if manage_order_status is None:
             statuses = ['Pending', 'Processing', 'Cancelled', 'Completed']
             probabilities = [0.01, 0.01, 0.01, 0.97]
-            manage_order_status = random.choices(statuses, weights=probabilities, k=1)[0]
+            manage_order_status = random_generator.choices(statuses, weights=probabilities, k=1)[0]
 
         if order_status is None:
             order_status = get_order_status(manage_order_status, payment_status)
@@ -875,9 +949,8 @@ def create_df_related_to_order(feedback_df: pd.DataFrame, customer_df: pd.DataFr
         feedback_customers, customer_sample
     ], axis=0, ignore_index=True)
     
-    random.seed(RANDOM_SEED)
 
-    product_variant_ids_sample = random.choices(
+    product_variant_ids_sample = random_generator.choices(
         product_variant_df['id'].tolist(), k=5000
     )
 
@@ -887,13 +960,12 @@ def create_df_related_to_order(feedback_df: pd.DataFrame, customer_df: pd.DataFr
 
         if pd.isna(row['product_variant_id']):
             if pd.isna(row['product_id']):
-                return int(random.choice(product_variant_ids_sample))
+                return random_generator.choice(product_variant_ids_sample)
             
-            return int(random.choice(product_id_to_variant_id[row['product_id']]))
+            return random_generator.choice(product_id_to_variant_id[row['product_id']])
         
-        return int(row['product_variant_id'])
+        return row['product_variant_id']
 
-    random.seed(RANDOM_SEED)
 
     customer_order_df['product_variant_id'] = customer_order_df.apply(
         lambda row: fill_product_variant_id(row), axis=1
@@ -909,7 +981,7 @@ def create_df_related_to_order(feedback_df: pd.DataFrame, customer_df: pd.DataFr
         if pd.isna(row['feedback_created_at']):
             return random_date(row['customer_created_at'])
         
-        return (datetime.strptime(row['feedback_created_at'], '%Y-%m-%d %H:%M:%S') - timedelta(days=random.randint(1, 3))).strftime('%Y-%m-%d %H:%M:%S')
+        return (datetime.strptime(row['feedback_created_at'], '%Y-%m-%d %H:%M:%S') - timedelta(days=random_generator.randint(1, 3))).strftime('%Y-%m-%d %H:%M:%S')
     
     def get_status(row):
         if pd.isna(row['feedback_created_at']):
@@ -948,7 +1020,6 @@ def create_df_related_to_order(feedback_df: pd.DataFrame, customer_df: pd.DataFr
 
 
     for index, row in tqdm(customer_order_df.iterrows(), total=customer_order_df.shape[0], desc='Processing orders', unit="rows", colour='green'):
-        id = index + 1
 
         customer_id = row['customer_id']
 
@@ -968,7 +1039,7 @@ def create_df_related_to_order(feedback_df: pd.DataFrame, customer_df: pd.DataFr
 
         product_variant_id = row['product_variant_id']
 
-        quantity = random.randint(1, 5)
+        quantity = random_generator.randint(1, 5)
 
         unit_price = product_variant_df.loc[product_variant_df['id'] == product_variant_id, 'price'].values[0]
 
@@ -976,16 +1047,27 @@ def create_df_related_to_order(feedback_df: pd.DataFrame, customer_df: pd.DataFr
 
         payment_amount = get_payment_amount(unit_price, quantity, order_date, voucher)
 
-        manager_id = random.choice(manager_ids)
+        manager_id = random_generator.choice(manager_ids)
 
         processing_time = random_date(order_date, payment_date) if payment_date else None
 
-        previous_status = random.choice(['Pending', 'Processing', 'Completed', 'Cancelled'])
+        previous_status = random_generator.choice(['Pending', 'Processing', 'Completed', 'Cancelled'])
 
         new_status = status
 
+        order_id = get_md5_hash(pd.Series({
+            'customer_id': customer_id,
+            'order_date': order_date,
+            'shipping_address': shipping_address,
+            'status': status,
+            'payment_method': payment_method,
+            'payment_date': payment_date,
+            'payment_status': payment_status,
+            'payment_amount': payment_amount
+        }))
+
         order_rows.append({
-            'id': id,
+            'id': order_id,
             'customer_id': customer_id,
             'order_date': order_date,
             'shipping_address': shipping_address,
@@ -996,19 +1078,35 @@ def create_df_related_to_order(feedback_df: pd.DataFrame, customer_df: pd.DataFr
             'payment_amount': payment_amount,
         })
 
-        order_item_rows.append({
-            'id': id,
+        order_item_id = get_md5_hash(pd.Series({
             'product_variant_id': product_variant_id,
-            'order_id': id,
+            'order_id': order_id,
+            'quantity': quantity,
+            'unit_price': unit_price,
+            'note': ''
+        }))
+
+        order_item_rows.append({
+            'id': order_item_id,
+            'product_variant_id': product_variant_id,
+            'order_id': order_id,
             'quantity': quantity,
             'unit_price': unit_price,
             'note': '',
         })
 
-        order_history_rows.append({
-            'id': id,
+        order_history_id = get_md5_hash(pd.Series({
             'manager_id': manager_id,
-            'order_id': id,
+            'order_id': order_id,
+            'processing_time': processing_time,
+            'previous_status': previous_status,
+            'new_status': new_status
+        }))
+
+        order_history_rows.append({
+            'id': order_history_id,
+            'manager_id': manager_id,
+            'order_id': order_id,
             'processing_time': processing_time,
             'previous_status': previous_status,
             'new_status': new_status,
@@ -1018,9 +1116,14 @@ def create_df_related_to_order(feedback_df: pd.DataFrame, customer_df: pd.DataFr
     order_item_df = pd.DataFrame(order_item_rows)
     order_history_df = pd.DataFrame(order_history_rows)
 
-    order_df['hash'] = order_df.apply(get_md5_hash, axis=1)
-    order_item_df['hash'] = order_item_df.apply(get_md5_hash, axis=1)
-    order_history_df['hash'] = order_history_df.apply(get_md5_hash, axis=1)
+    order_df.sort_values(by='id', inplace=True)
+    order_df.reset_index(drop=True, inplace=True)
+
+    order_item_df.sort_values(by='id', inplace=True)
+    order_item_df.reset_index(drop=True, inplace=True)
+
+    order_history_df.sort_values(by='id', inplace=True)
+    order_history_df.reset_index(drop=True, inplace=True)
 
     return {
         'order_df': order_df,
@@ -1028,15 +1131,15 @@ def create_df_related_to_order(feedback_df: pd.DataFrame, customer_df: pd.DataFr
         'order_history_df': order_history_df
     }
 
-@task(name="Save category dataframe to sql server")
-def save_category_df(category_df: pd.DataFrame, cursor: pyodbc.Cursor):
+@task(name="Save category dataframe to sql server", cache_policy=NO_CACHE)
+def save_category_df(category_df: pd.DataFrame):
+    conn = get_db_connection(DB_NAME)
+    cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE #new_category(
+            id NVARCHAR(255) PRIMARY KEY,
             name NVARCHAR(255),
-            hash NVARCHAR(255)
-        );
-                   
-        CREATE INDEX nidx_category_hash ON #new_category(hash);
+        );       
     """)
 
     category_tuples = [
@@ -1045,40 +1148,57 @@ def save_category_df(category_df: pd.DataFrame, cursor: pyodbc.Cursor):
     ]
     
     cursor.executemany("""
-        INSERT INTO #new_category(name, hash)
+        INSERT INTO #new_category(id, name)
         VALUES (?, ?);
     """, category_tuples)
+
+    cursor.execute("""
+        SELECT COUNT(*) FROM #new_category
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM category c
+            WHERE c.id = #new_category.id
+        );
+    """)
+
+    new_category_count = cursor.fetchone()[0]
+    print(f"Number of new categories added: {new_category_count}")
     
 
     cursor.execute("""
-        INSERT INTO category(name, hash)
-        SELECT name, hash
+        INSERT INTO category(id, name)
+        SELECT id, name
         FROM #new_category
         WHERE NOT EXISTS (
             SELECT 1
             FROM category c
-            WHERE c.hash = #new_category.hash
+            WHERE c.id = #new_category.id
         );
     """)
 
     cursor.execute("""
         DROP TABLE #new_category;
     """)
+    
+    conn.commit()
+    conn.close()
 
-@task(name="Save product dataframe to sql server")
-def save_product_df(product_df: pd.DataFrame, cursor: pyodbc.Cursor):
+    return True
+
+@task(name="Save product dataframe to sql server", cache_policy=NO_CACHE)
+def save_product_df(product_df: pd.DataFrame):
+    conn = get_db_connection(DB_NAME)
+    cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE #new_product(
-            category_id INT,
+            id NVARCHAR(255) PRIMARY KEY,
+            category_id NVARCHAR(50),
             name NVARCHAR(255),
             description NVARCHAR(MAX),
             specification NVARCHAR(MAX),
-            image_url NVARCHAR(255),
+            image_url NVARCHAR(MAX),
             brand NVARCHAR(255),
-            hash NVARCHAR(255)
         );
-                   
-        CREATE INDEX nidx_product_hash ON #new_product(hash);
     """)
     product_tuples = [
         tuple(None if pd.isna(x) else x for x in row)
@@ -1086,18 +1206,30 @@ def save_product_df(product_df: pd.DataFrame, cursor: pyodbc.Cursor):
     ]
 
     cursor.executemany("""
-        INSERT INTO #new_product(category_id, name, description, specification, image_url, brand, hash)
+        INSERT INTO #new_product(id, category_id, name, description, specification, image_url, brand)
         VALUES (?, ?, ?, ?, ?, ?, ?);
     """, product_tuples)
 
     cursor.execute("""
-        INSERT INTO product(category_id, name, description, specification, image_url, brand, hash)
-        SELECT category_id, name, description, specification, image_url, brand, hash
+        SELECT COUNT(*) FROM #new_product
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM product p
+            WHERE p.id = #new_product.id
+        );
+    """)
+
+    new_product_count = cursor.fetchone()[0]
+    print(f"Number of new products added: {new_product_count}")
+
+    cursor.execute("""
+        INSERT INTO product(id, category_id, name, description, specification, image_url, brand)
+        SELECT id, category_id, name, description, specification, image_url, brand
         FROM #new_product
         WHERE NOT EXISTS (
             SELECT 1
             FROM product p
-            WHERE p.hash = #new_product.hash
+            WHERE p.id = #new_product.id
         );
     """)
 
@@ -1105,15 +1237,20 @@ def save_product_df(product_df: pd.DataFrame, cursor: pyodbc.Cursor):
         DROP TABLE #new_product;
     """)
 
-@task(name="Save attribute dataframe to sql server")
-def save_attribute_df(attribute_df: pd.DataFrame, cursor: pyodbc.Cursor):
+    conn.commit()
+    conn.close()
+
+    return True
+
+@task(name="Save attribute dataframe to sql server", cache_policy=NO_CACHE)
+def save_attribute_df(attribute_df: pd.DataFrame):
+    conn = get_db_connection(DB_NAME)
+    cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE #new_attribute(
+            id NVARCHAR(255) PRIMARY KEY,
             name NVARCHAR(255),
-            hash NVARCHAR(255)
         );
-                   
-        CREATE INDEX nidx_attribute_hash ON #new_attribute(hash);
     """)
 
     attribute_tuples = [
@@ -1122,34 +1259,53 @@ def save_attribute_df(attribute_df: pd.DataFrame, cursor: pyodbc.Cursor):
     ]
 
     cursor.executemany("""
-        INSERT INTO #new_attribute(name, hash)
+        INSERT INTO #new_attribute(id, name)
         VALUES (?, ?);
     """, attribute_tuples)
 
     cursor.execute("""
-        INSERT INTO attribute(name, hash)
-        SELECT name, hash
+        SELECT COUNT(*) FROM #new_attribute
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM attribute a
+            WHERE a.id = #new_attribute.id
+        );
+    """)
+
+    new_attribute_count = cursor.fetchone()[0]
+    print(f"Number of new attributes added: {new_attribute_count}")
+
+    cursor.execute("""
+        INSERT INTO attribute(id, name)
+        SELECT id, name
         FROM #new_attribute
         WHERE NOT EXISTS (
             SELECT 1
             FROM attribute a
-            WHERE a.hash = #new_attribute.hash
+            WHERE a.id = #new_attribute.id
         );
     """)
+
     cursor.execute("""
         DROP TABLE #new_attribute;
     """)
 
-@task(name="Save attribute value dataframe to sql server")
-def save_attribute_value_df(attribute_value_df: pd.DataFrame, cursor: pyodbc.Cursor):
+    
+    conn.commit()
+    conn.close()
+
+    return True
+
+@task(name="Save attribute value dataframe to sql server", cache_policy=NO_CACHE)
+def save_attribute_value_df(attribute_value_df: pd.DataFrame):
+    conn = get_db_connection(DB_NAME)
+    cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE #new_attribute_value(
-            attribute_id INT,
+            id NVARCHAR(255) PRIMARY KEY,
+            attribute_id NVARCHAR(50),
             value NVARCHAR(255),
-            hash NVARCHAR(255)
-        );
-                   
-        CREATE INDEX nidx_attribute_value_hash ON #new_attribute_value(hash);
+        );                   
     """)
 
     attribute_value_tuples = [
@@ -1158,39 +1314,58 @@ def save_attribute_value_df(attribute_value_df: pd.DataFrame, cursor: pyodbc.Cur
     ]
 
     cursor.executemany("""
-        INSERT INTO #new_attribute_value(attribute_id, value, hash)
+        INSERT INTO #new_attribute_value(id, attribute_id, value)
         VALUES (?, ?, ?);
     """, attribute_value_tuples)
 
     cursor.execute("""
-        INSERT INTO attribute_value(attribute_id, value, hash)
-        SELECT attribute_id, value, hash
+        SELECT COUNT(*) FROM #new_attribute_value
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM attribute_value av
+            WHERE av.id = #new_attribute_value.id
+        );
+    """)
+
+    new_attribute_value_count = cursor.fetchone()[0]
+    print(f"Number of new attribute values added: {new_attribute_value_count}")
+
+    cursor.execute("""
+        INSERT INTO attribute_value(id, attribute_id, value)
+        SELECT id, attribute_id, value
         FROM #new_attribute_value
         WHERE NOT EXISTS (
             SELECT 1
             FROM attribute_value av
-            WHERE av.hash = #new_attribute_value.hash
+            WHERE av.id = #new_attribute_value.id
         );
     """)
+
     cursor.execute("""
         DROP TABLE #new_attribute_value;
     """)
+    
+    conn.commit()
+    conn.close()
 
-@task(name="Save product_variant dataframe to sql server")
-def save_product_variant_df(product_variant_df: pd.DataFrame, cursor: pyodbc.Cursor):
+    return True
+
+
+@task(name="Save product_variant dataframe to sql server", cache_policy=NO_CACHE)
+def save_product_variant_df(product_variant_df: pd.DataFrame):
+    conn = get_db_connection(DB_NAME)
+    cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE #new_product_variant(
-            product_id INT,
+            id NVARCHAR(255) PRIMARY KEY,
+            product_id NVARCHAR(50),
             price FLOAT,
             original_price FLOAT,
             profit FLOAT,
             sku NVARCHAR(255),
             stock_quantity INT,
             sold_quantity INT,
-            hash NVARCHAR(255)
-        );
-                   
-        CREATE INDEX nidx_product_variant_hash ON #new_product_variant(hash);
+        );                   
     """)
 
     product_variant_tuples = [
@@ -1199,37 +1374,56 @@ def save_product_variant_df(product_variant_df: pd.DataFrame, cursor: pyodbc.Cur
     ]
 
     cursor.executemany("""
-        INSERT INTO #new_product_variant(product_id, price, original_price, profit, sku, stock_quantity, sold_quantity, hash)
+        INSERT INTO #new_product_variant(id, product_id, price, original_price, profit, sku, stock_quantity, sold_quantity)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?);
     """, product_variant_tuples)
 
+
     cursor.execute("""
-        INSERT INTO product_variant(product_id, price, original_price, profit, sku, stock_quantity, sold_quantity, hash)
-        SELECT product_id, price, original_price, profit, sku, stock_quantity, sold_quantity, hash
+        SELECT COUNT(*) FROM #new_product_variant
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM product_variant pv
+            WHERE pv.id = #new_product_variant.id
+        );
+    """)
+
+    new_product_variant_count = cursor.fetchone()[0]
+    print(f"Number of new product variants added: {new_product_variant_count}")
+
+    cursor.execute("""
+        INSERT INTO product_variant(id, product_id, price, original_price, profit, sku, stock_quantity, sold_quantity)
+        SELECT id, product_id, price, original_price, profit, sku, stock_quantity, sold_quantity
         FROM #new_product_variant
         WHERE NOT EXISTS (
             SELECT 1
             FROM product_variant pv
-            WHERE pv.hash = #new_product_variant.hash
+            WHERE pv.id = #new_product_variant.id
         );           
     """)
 
     cursor.execute("""
         DROP TABLE #new_product_variant;
     """)
+    
+    conn.commit()
+    conn.close()
 
-@task(name="Save attribute_variant dataframe to sql server")
-def save_attribute_variant_df(attribute_variant_df: pd.DataFrame, cursor: pyodbc.Cursor):
+    return True
+
+@task(name="Save attribute_variant dataframe to sql server", cache_policy=NO_CACHE)
+def save_attribute_variant_df(attribute_variant_df: pd.DataFrame):
+    conn = get_db_connection(DB_NAME)
+    cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE #new_attribute_variant(
-            product_variant_id INT,
-            attribute_id INT,
-            attribute_value_id INT,
+            product_variant_id NVARCHAR(50),
+            attribute_id NVARCHAR(50),
+            attribute_value_id NVARCHAR(50),
             hash NVARCHAR(255)
         );
                    
-        CREATE INDEX nidx_attribute_variant_hash ON
-        #new_attribute_variant(hash);
+        CREATE INDEX nidx_attribute_variant_hash ON #new_attribute_variant(hash);
     """)
 
     attribute_variant_tuples = [
@@ -1242,6 +1436,18 @@ def save_attribute_variant_df(attribute_variant_df: pd.DataFrame, cursor: pyodbc
         VALUES (?, ?, ?, ?);
     """, attribute_variant_tuples)
 
+    cursor.execute("""
+        SELECT COUNT(*) FROM #new_attribute_variant
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM attribute_variant av
+            WHERE av.hash = #new_attribute_variant.hash
+        );
+    """)
+
+    new_attribute_variant_count = cursor.fetchone()[0]
+    print(f"Number of new attribute variants added: {new_attribute_variant_count}")
+    
     cursor.execute("""
         INSERT INTO attribute_variant(product_variant_id, attribute_id, attribute_value_id, hash)
         SELECT product_variant_id, attribute_id, attribute_value_id, hash
@@ -1256,21 +1462,27 @@ def save_attribute_variant_df(attribute_variant_df: pd.DataFrame, cursor: pyodbc
     cursor.execute("""
         DROP TABLE #new_attribute_variant;
     """)
+    
+    conn.commit()
+    conn.close()
 
-@task(name="Save feedback dataframe to sql server")
-def save_feedback_df(feedback_df: pd.DataFrame, cursor: pyodbc.Cursor):
+    return True
+
+
+@task(name="Save feedback dataframe to sql server", cache_policy=NO_CACHE)
+def save_feedback_df(feedback_df: pd.DataFrame):
+    conn = get_db_connection(DB_NAME)
+    cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE #new_feedback(
+            id NVARCHAR(255) PRIMARY KEY,
             customer_id INT,
-            product_id INT,
-            product_variant_id INT,
+            product_id NVARCHAR(50),
+            product_variant_id NVARCHAR(50),
             rating FLOAT,
             comment NVARCHAR(MAX),
             created_at DATETIME,
-            hash NVARCHAR(255)
         );
-                   
-        CREATE INDEX nidx_feedback_hash ON #new_feedback(hash);
     """)
 
     feedback_tuples = [
@@ -1279,37 +1491,55 @@ def save_feedback_df(feedback_df: pd.DataFrame, cursor: pyodbc.Cursor):
     ]
 
     cursor.executemany("""
-        INSERT INTO #new_feedback(customer_id, product_id, product_variant_id, rating, comment, created_at, hash)
+        INSERT INTO #new_feedback(id, customer_id, product_id, product_variant_id, rating, comment, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?);
     """, feedback_tuples)
 
     cursor.execute("""
-        INSERT INTO feedback(customer_id, product_id, product_variant_id, rating, comment, created_at, hash)
-        SELECT customer_id, product_id, product_variant_id, rating, comment, created_at, hash
+        SELECT COUNT(*) FROM #new_feedback
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM feedback f
+            WHERE f.id = #new_feedback.id
+        );
+    """)
+
+    new_feedback_count = cursor.fetchone()[0]
+    print(f"Number of new feedbacks added: {new_feedback_count}")
+
+    cursor.execute("""
+        INSERT INTO feedback(id, customer_id, product_id, product_variant_id, rating, comment, created_at)
+        SELECT id, customer_id, product_id, product_variant_id, rating, comment, created_at
         FROM #new_feedback
         WHERE NOT EXISTS (
             SELECT 1
             FROM feedback f
-            WHERE f.hash = #new_feedback.hash
+            WHERE f.id = #new_feedback.id
         );
     """)
 
     cursor.execute("""
         DROP TABLE #new_feedback;
     """)
+    
+    conn.commit()
+    conn.close()
 
-@task(name="Save feedback response dataframe to sql server")
-def save_feedback_response_df(feedback_response_df: pd.DataFrame, cursor: pyodbc.Cursor):
+    return True
+
+
+@task(name="Save feedback response dataframe to sql server", cache_policy=NO_CACHE)
+def save_feedback_response_df(feedback_response_df: pd.DataFrame):
+    conn = get_db_connection(DB_NAME)
+    cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE #new_feedback_response(
+            id NVARCHAR(255) PRIMARY KEY,
             manager_id INT,
-            feedback_id INT,
+            feedback_id NVARCHAR(50),
             comment NVARCHAR(MAX),
             created_at DATETIME,
-            hash NVARCHAR(255)
-        );
-                   
-        CREATE INDEX nidx_feedback_response_hash ON #new_feedback_response(hash);
+        );                   
     """)
 
     feedback_response_tuples = [
@@ -1318,30 +1548,51 @@ def save_feedback_response_df(feedback_response_df: pd.DataFrame, cursor: pyodbc
     ]
 
     cursor.executemany("""
-        INSERT INTO #new_feedback_response(manager_id, feedback_id, comment, created_at, hash)
+        INSERT INTO #new_feedback_response(id, manager_id, feedback_id, comment, created_at)
         VALUES (?, ?, ?, ?, ?);
     """, feedback_response_tuples)
 
     cursor.execute("""
-        INSERT INTO feedback_response(manager_id, feedback_id, comment, created_at, hash)
-        SELECT manager_id, feedback_id, comment, created_at, hash
+        SELECT COUNT(*) FROM #new_feedback_response
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM feedback_response fr
+            WHERE fr.id = #new_feedback_response.id
+        );
+    """)
+
+    new_feedback_response_count = cursor.fetchone()[0]
+    print(f"Number of new feedback responses added: {new_feedback_response_count}")
+
+    cursor.execute("""
+        INSERT INTO feedback_response(id, manager_id, feedback_id, content, created_at)
+        SELECT id, manager_id, feedback_id, comment, created_at
         FROM #new_feedback_response
         WHERE NOT EXISTS (
             SELECT 1
             FROM feedback_response fr
-            WHERE fr.hash = #new_feedback_response.hash
+            WHERE fr.id = #new_feedback_response.id
         );
     """)
 
     cursor.execute("""
         DROP TABLE #new_feedback_response;
     """)
+    
+    conn.commit()
+    conn.close()
 
-@task(name="Save discount dataframe to sql server")
-def save_discount_df(discount_df: pd.DataFrame, cursor: pyodbc.Cursor):
+    return True
+
+
+@task(name="Save discount dataframe to sql server", cache_policy=NO_CACHE)
+def save_discount_df(discount_df: pd.DataFrame):
+    conn = get_db_connection(DB_NAME)
+    cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE #new_discount(
-            product_variant_id INT,
+            id NVARCHAR(255) PRIMARY KEY,
+            product_variant_id NVARCHAR(50),
             code NVARCHAR(255),
             name NVARCHAR(255),
             type NVARCHAR(255),
@@ -1349,10 +1600,7 @@ def save_discount_df(discount_df: pd.DataFrame, cursor: pyodbc.Cursor):
             status NVARCHAR(255),
             start_date DATETIME,
             end_date DATETIME,
-            hash NVARCHAR(255)
         );
-                   
-        CREATE INDEX nidx_discount_hash ON #new_discount(hash);
     """)
 
     discount_tuples = [
@@ -1361,29 +1609,50 @@ def save_discount_df(discount_df: pd.DataFrame, cursor: pyodbc.Cursor):
     ]
 
     cursor.executemany("""
-        INSERT INTO #new_discount(product_variant_id, code, name, type, value, status, start_date, end_date, hash)
+        INSERT INTO #new_discount(id, product_variant_id, code, name, type, value, status, start_date, end_date)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
     """, discount_tuples)
 
     cursor.execute("""
-        INSERT INTO discount(product_variant_id, code, name, type, value, status, start_date, end_date, hash)
-        SELECT product_variant_id, code, name, type, value, status, start_date, end_date, hash
+        SELECT COUNT(*) FROM #new_discount
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM discount d
+            WHERE d.id = #new_discount.id
+        );
+    """)
+
+    new_discount_count = cursor.fetchone()[0]
+    print(f"Number of new discounts added: {new_discount_count}")
+
+    cursor.execute("""
+        INSERT INTO discount(id, product_variant_id, code, name, type, value, status, start_date, end_date)
+        SELECT id, product_variant_id, code, name, type, value, status, start_date, end_date
         FROM #new_discount
         WHERE NOT EXISTS (
             SELECT 1
             FROM discount d
-            WHERE d.hash = #new_discount.hash
+            WHERE d.id = #new_discount.id
         );
     """)
 
     cursor.execute("""
         DROP TABLE #new_discount;
     """)
+    
+    conn.commit()
+    conn.close()
 
-@task(name="Save order dataframe to sql server")
-def save_order_df(order_df: pd.DataFrame, cursor: pyodbc.Cursor):
+    return True
+
+
+@task(name="Save order dataframe to sql server", cache_policy=NO_CACHE)
+def save_order_df(order_df: pd.DataFrame):
+    conn = get_db_connection(DB_NAME)
+    cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE #new_order(
+            id NVARCHAR(255) PRIMARY KEY,
             customer_id INT,
             order_date DATETIME,
             shipping_address NVARCHAR(255),
@@ -1392,10 +1661,7 @@ def save_order_df(order_df: pd.DataFrame, cursor: pyodbc.Cursor):
             payment_date DATETIME,
             payment_status NVARCHAR(255),
             payment_amount FLOAT,
-            hash NVARCHAR(255)
         );
-                   
-        CREATE INDEX nidx_order_hash ON #new_order(hash);
     """)
     
     order_tuples = [
@@ -1404,38 +1670,56 @@ def save_order_df(order_df: pd.DataFrame, cursor: pyodbc.Cursor):
     ]
 
     cursor.executemany("""
-        INSERT INTO #new_order(customer_id, order_date, shipping_address, status, payment_method, payment_date, payment_status, payment_amount, hash)
+        INSERT INTO #new_order(id, customer_id, order_date, shipping_address, status, payment_method, payment_date, payment_status, payment_amount)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
     """, order_tuples)
-    
+ 
     cursor.execute("""
-        INSERT INTO [order](customer_id, order_date, shipping_address, status, payment_method, payment_date, payment_status, payment_amount, hash)
-        SELECT customer_id, order_date, shipping_address, status, payment_method, payment_date, payment_status, payment_amount, hash
+        SELECT COUNT(*) FROM #new_order
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM [order] o
+            WHERE o.id = #new_order.id
+        );
+    """)
+
+    new_order_count = cursor.fetchone()[0]
+    print(f"Number of new orders added: {new_order_count}")
+   
+    cursor.execute("""
+        INSERT INTO [order](id, customer_id, order_date, shipping_address, status, payment_method, payment_date, payment_status, payment_amount)
+        SELECT id, customer_id, order_date, shipping_address, status, payment_method, payment_date, payment_status, payment_amount
         FROM #new_order
         WHERE NOT EXISTS (
             SELECT 1
             FROM [order] o
-            WHERE o.hash = #new_order.hash
+            WHERE o.id = #new_order.id
         );
     """)
 
     cursor.execute("""
         DROP TABLE #new_order;
     """)
+    
+    conn.commit()
+    conn.close()
 
-@task(name="Save order_item dataframe to sql server")
-def save_order_item_df(order_item_df: pd.DataFrame, cursor: pyodbc.Cursor):
+    return True
+
+
+@task(name="Save order_item dataframe to sql server", cache_policy=NO_CACHE)
+def save_order_item_df(order_item_df: pd.DataFrame):
+    conn = get_db_connection(DB_NAME)
+    cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE #new_order_item(
-            product_variant_id INT,
-            order_id INT,
+            id NVARCHAR(255) PRIMARY KEY,
+            product_variant_id NVARCHAR(50),
+            order_id NVARCHAR(50),
             quantity INT,
             unit_price FLOAT,
             note NVARCHAR(255),
-            hash NVARCHAR(255)
         );
-                   
-        CREATE INDEX nidx_order_item_hash ON #new_order_item(hash);
     """)
 
     order_item_tuples = [
@@ -1444,38 +1728,56 @@ def save_order_item_df(order_item_df: pd.DataFrame, cursor: pyodbc.Cursor):
     ]
 
     cursor.executemany("""
-        INSERT INTO #new_order_item(product_variant_id, order_id, quantity, unit_price, note, hash)
+        INSERT INTO #new_order_item(id, product_variant_id, order_id, quantity, unit_price, note)
         VALUES (?, ?, ?, ?, ?, ?);
     """, order_item_tuples)
 
     cursor.execute("""
-        INSERT INTO order_item(product_variant_id, order_id, quantity, unit_price, note, hash)
-        SELECT product_variant_id, order_id, quantity, unit_price, note, hash
+        SELECT COUNT(*) FROM #new_order_item
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM order_item oi
+            WHERE oi.id = #new_order_item.id
+        );
+    """)
+
+    new_order_item_count = cursor.fetchone()[0]
+    print(f"Number of new order items added: {new_order_item_count}")
+
+    cursor.execute("""
+        INSERT INTO order_item(id, product_variant_id, order_id, quantity, unit_price, note)
+        SELECT id, product_variant_id, order_id, quantity, unit_price, note
         FROM #new_order_item
         WHERE NOT EXISTS (
             SELECT 1
             FROM order_item oi
-            WHERE oi.hash = #new_order_item.hash
+            WHERE oi.id = #new_order_item.id
         );           
     """)
 
     cursor.execute("""
         DROP TABLE #new_order_item;
     """)
+    
+    conn.commit()
+    conn.close()
 
-@task(name="Save order_history dataframe to sql server")
-def save_order_history_df(order_history_df: pd.DataFrame, cursor: pyodbc.Cursor):
+    return True
+
+
+@task(name="Save order_history dataframe to sql server", cache_policy=NO_CACHE)
+def save_order_history_df(order_history_df: pd.DataFrame):
+    conn = get_db_connection(DB_NAME)
+    cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE #new_order_history(
+            id NVARCHAR(255) PRIMARY KEY,
             manager_id INT,
-            order_id INT,
+            order_id NVARCHAR(50),
             processing_time DATETIME,
             previous_status NVARCHAR(255),
             new_status NVARCHAR(255),
-            hash NVARCHAR(255)
-        );
-                   
-        CREATE INDEX nidx_order_history_hash ON #new_order_history(hash);
+        );                   
     """)
 
     order_history_tuples = [
@@ -1483,24 +1785,53 @@ def save_order_history_df(order_history_df: pd.DataFrame, cursor: pyodbc.Cursor)
         for row in tqdm(order_history_df.itertuples(index=False, name=None), total=order_history_df.shape[0], desc="Creating new order history data", unit="rows", colour="green")
     ]
     cursor.executemany("""
-        INSERT INTO #new_order_history(manager_id, order_id, processing_time, previous_status, new_status, hash)
+        INSERT INTO #new_order_history(id, manager_id, order_id, processing_time, previous_status, new_status)
         VALUES (?, ?, ?, ?, ?, ?);
     """, order_history_tuples)
 
     cursor.execute("""
-        INSERT INTO order_history(manager_id, order_id, processing_time, previous_status, new_status, hash)
-        SELECT manager_id, order_id, processing_time, previous_status, new_status, hash
+        SELECT COUNT(*) FROM #new_order_history
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM order_history oh
+            WHERE oh.id = #new_order_history.id
+        );
+    """)
+
+    new_order_history_count = cursor.fetchone()[0]
+    print(f"Number of new order histories added: {new_order_history_count}")
+
+    cursor.execute("""
+        INSERT INTO order_history(id, manager_id, order_id, processing_time, previous_status, new_status)
+        SELECT id, manager_id, order_id, processing_time, previous_status, new_status
         FROM #new_order_history
         WHERE NOT EXISTS (
             SELECT 1
             FROM order_history oh
-            WHERE oh.hash = #new_order_history.hash
+            WHERE oh.id = #new_order_history.id
         );
     """)
 
     cursor.execute("""
         DROP TABLE #new_order_history;
     """)
+    
+    conn.commit()
+    conn.close()
+
+    return True
+
+
+@task(name="Get connection to database", cache_policy=NO_CACHE)
+def get_conn(db_name: str):
+    return get_db_connection(db_name)
+
+@task(name="Close connection to database", cache_policy=NO_CACHE)
+def close_conn(conn: pyodbc.Connection):
+    conn.commit()
+    conn.close()
+
+    return True
 
 @flow(name="ETL Pipeline")
 def etl_pipeline():
@@ -1527,7 +1858,7 @@ def etl_pipeline():
          option_to_variant_id, old_product_id_to_new_product_id
      ) = create_df_related_to_product.submit(products, category_dict, attribute_dict, attribute_value_dict).result().values()
     
-    conn = get_db_connection(DB_NAME)
+    conn = get_conn.submit(DB_NAME).result()
     cursor = conn.cursor()
 
     customer_df = pd.read_sql_query("""
@@ -1535,13 +1866,13 @@ def etl_pipeline():
         FROM customer as c
         JOIN account as a
         ON c.account_id = a.id
-        WHERE a.status != 'banned';
+        WHERE a.status != 'banned'
+        ORDER BY c.id, a.created_at, c.address;
     """, conn)
 
     feedbacks = read_feedback_csv_file()
     (
         feedback_df,
-        old_customer_id_to_new_customer_id,
         old_feedback_id_to_feedback
     ) = create_feedback_df.submit(feedbacks, customer_df, option_to_variant_id, old_product_id_to_new_product_id).result().values()
 
@@ -1552,7 +1883,8 @@ def etl_pipeline():
         FROM manager as m
         JOIN role as r
         ON m.role_id = r.id
-        WHERE r.name = 'service_customer';
+        WHERE r.name = 'service_customer'
+        ORDER BY m.id;
     """, conn)
 
     feedback_response_df = create_feedback_response_df.submit(feedback_responses, service_customer_df, old_feedback_id_to_feedback)
@@ -1567,32 +1899,67 @@ def etl_pipeline():
         FROM manager as m
         JOIN role as r
         ON m.role_id = r.id
-        WHERE r.name = 'product_manager';
+        WHERE r.name = 'product_manager'
+        ORDER BY m.id;
     """, conn)
-
+    
+    close_conn.submit(conn)
+    
     (
         order_df,
         order_item_df,
         order_history_df
     ) = create_df_related_to_order.submit(feedback_df, customer_df, product_variant_df, manager_df, variant_id_to_voucher).result().values()
 
-    save_category_df.submit(category_df, cursor)
-    save_product_df.submit(product_df, cursor)
-    save_attribute_df.submit(attribute_df, cursor)
-    save_attribute_value_df.submit(attribute_value_df, cursor)
-    save_product_variant_df.submit(product_variant_df, cursor)
-    save_attribute_variant_df.submit(attribute_variant_df, cursor)
-    save_feedback_df.submit(feedback_df, cursor)
-    save_feedback_response_df.submit(feedback_response_df.result(), cursor)
-    save_discount_df.submit(discount_df, cursor)
-    save_order_df.submit(order_df, cursor)
-    save_order_item_df.submit(order_item_df, cursor)
-    save_order_history_df.submit(order_history_df, cursor)
+    print("Category DataFrame:")
+    print(category_df_result.to_csv(os.path.join(current_dir, 'category_df.csv'), index=False))
+    print("Product Variant DataFrame:")
+    print(product_variant_df.to_csv(os.path.join(current_dir, 'product_variant_df.csv'), index=False))
 
-    conn.commit()
-    conn.close()
+    print("Discount DataFrame:")
+    print(discount_df.to_csv(os.path.join(current_dir, 'discount_df.csv'), index=False))
+
+    print("Feedback DataFrame:")
+    print(feedback_df.to_csv(os.path.join(current_dir, 'feedback_df.csv'), index=False))
+
+    print("Feedback Response DataFrame:")
+    print(feedback_response_df.result().to_csv(os.path.join(current_dir, 'feedback_response_df.csv'), index=False))
+
+    print("Order DataFrame:")
+    print(order_df.to_csv(os.path.join(current_dir, 'order_df.csv'), index=False))
+
+
+    save_category_df.submit(category_df).result()
+    save_product_df.submit(product_df).result()
+    save_attribute_df.submit(attribute_df).result()
+
+    save_attribute_df_result = save_attribute_value_df.submit(attribute_value_df)
+    save_product_variant_df_result = save_product_variant_df.submit(product_variant_df)
+
+    if (save_attribute_df_result 
+        and save_product_variant_df_result 
+        and save_attribute_df_result.result() 
+        and save_product_variant_df_result.result()
+    ):
+        save_attribute_variant_df_result = save_attribute_variant_df.submit(attribute_variant_df)
+
+    if save_attribute_variant_df_result and save_attribute_variant_df_result.result():
+        save_feedback_df_result = save_feedback_df.submit(feedback_df)
+
+    if save_feedback_df_result and save_feedback_df_result.result():
+        save_feedback_response_df.submit(feedback_response_df.result())
+
+    save_discount_df.submit(discount_df)
+    
+    save_order_df_result = save_order_df.submit(order_df)
+    if save_order_df_result and save_order_df_result.result():
+        save_order_item_df.submit(order_item_df)
+        save_order_history_df.submit(order_history_df)
 
     
 if __name__ == "__main__":
+    # etl_pipeline.serve(
+    #     name="ETL Pipeline",
+    #     cron="*/5 * * * *",
+    # )
     etl_pipeline()
-    print("ETL pipeline completed successfully.")

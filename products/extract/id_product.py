@@ -72,6 +72,9 @@ def get_tiki_products(urlKey, category, page):
         "page": f"{page}"
     }
     response = requests.get("https://tiki.vn/api/personalish/v1/blocks/listings", headers=headers, params=params)
+
+    time.sleep(0.5)
+
     if response.status_code == 200:
         data = response.json()
         products = data.get("data", [])
@@ -94,7 +97,7 @@ for item in payload:
     for i in range(1, max_pages +1 ):
         print(f"Trang {i}")
         get_tiki_products(item['urlKey'], item['category'], page=i)
-        time.sleep(1)
+        time.sleep(0.3)
 
     All_id["id"] = All_id_product
 
@@ -105,3 +108,5 @@ for item in payload:
     file_path = f"../data/id/{filename}"
     df.to_csv(file_path, index=False, sep=',', encoding='utf-8-sig')
     print(f"Đã lưu {len(All_id)} sản phẩm vào '{file_path}'\n")
+
+    time.sleep(2.0)

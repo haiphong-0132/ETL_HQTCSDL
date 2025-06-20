@@ -65,6 +65,7 @@ def clean_special_char(s):
 def get_product_link(id):
     url = f"https://tiki.vn/api/v2/products/{id}?platform=web&version=3"           ##query ngắn nên viết pẹ link luôn, ko dùng params nữa
     response = requests.get(url, headers=headers)
+    time.sleep(random.randint(3, 8)/ 10)
     if response.status_code == 200:
         data = response.json()
         name = data.get("name", "Không có tên").strip()                                    
@@ -151,4 +152,4 @@ for item in id_product_file:
     file_path = f"../data/product/{filename}"
     df.to_csv(file_path, index=False, sep=',', encoding='utf-8-sig')
     print(f"Đã lưu {len(All_product_info)} sản phẩm vào '{file_path}'\n")
-    time.sleep(random.randint(300, 600)/10)
+    time.sleep(random.randint(30, 60)/10)

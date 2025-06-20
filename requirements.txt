@@ -1,4 +1,7 @@
-pandas==2.2.3
+beautifulsoup4==4.13.4
+pandas==2.3.0
+prefect==3.4.6
 pyodbc==5.2.0
 python-dotenv==1.1.0
-vn_fullname_generator==0.0.2
+Requests==2.32.4
+tqdm==4.67.1

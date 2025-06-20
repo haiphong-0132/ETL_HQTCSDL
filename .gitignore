@@ -10,3 +10,4 @@ users/users.csv
 *.csv
 products/check.ipynb
 *.zip
+*.csv

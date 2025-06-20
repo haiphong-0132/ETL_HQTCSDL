@@ -14,48 +14,48 @@ headers = {
 }
 
 id_product_file = [
-    # "camera_id.csv",
-    # "dienthoai_id.csv",
-    # "dienthoaiban_id.csv",
-    # "dienthoaiphothong_id.csv",
-    # "dieuhoa_id.csv",
-    # "laptop_id.csv",
-    # "mayanh_id.csv",
-    # "maydocsach_id.csv",
-    # "maygiat_id.csv",
-    # "maytinhbang_id.csv",
-    # "maytinhdeban_id.csv",
+    "camera_id.csv",
+    "dienthoai_id.csv",
+    "dienthoaiban_id.csv",
+    "dienthoaiphothong_id.csv",
+    "dieuhoa_id.csv",
+    "laptop_id.csv",
+    "mayanh_id.csv",
+    "maydocsach_id.csv",
+    "maygiat_id.csv",
+    "maytinhbang_id.csv",
+    "maytinhdeban_id.csv",
     "tivi_id.csv",
     "tulanh_id.csv"
 ]
 
 feedback_file = [
-    # "camera_fb.csv",
-    # "dienthoai_fb.csv",
-    # "dienthoaiban_fb.csv",
-    # # "dienthoaiphothong_fb.csv",
-    # "dieuhoa_fb.csv",
-    # "laptop_fb.csv",
-    # "mayanh_fb.csv",
-    # "maydocsach_fb.csv",
-    # "maygiat_fb.csv",
-    # "maytinhbang_fb.csv",
-    # "maytinhdeban_fb.csv",
+    "camera_fb.csv",
+    "dienthoai_fb.csv",
+    "dienthoaiban_fb.csv",
+    "dienthoaiphothong_fb.csv",
+    "dieuhoa_fb.csv",
+    "laptop_fb.csv",
+    "mayanh_fb.csv",
+    "maydocsach_fb.csv",
+    "maygiat_fb.csv",
+    "maytinhbang_fb.csv",
+    "maytinhdeban_fb.csv",
     "tivi_fb.csv",
     "tulanh_fb.csv"
 ]
 feedback_manager_file = [
-    # "camera_fb_ma.csv",
-    # "dienthoai_fb_ma.csv",
-    # "dienthoaiban_fb_ma.csv",
-    # "dienthoaiphothong_fb_ma.csv",
-    # "dieuhoa_fb_ma.csv",
-    # "laptop_fb_ma.csv",
-    # "mayanh_fb_ma.csv",
-    # "maydocsach_fb_ma.csv",
-    # "maygiat_fb_ma.csv",
-    # "maytinhbang_fb_ma.csv",
-    # "maytinhdeban_fb_ma.csv",
+    "camera_fb_ma.csv",
+    "dienthoai_fb_ma.csv",
+    "dienthoaiban_fb_ma.csv",
+    "dienthoaiphothong_fb_ma.csv",
+    "dieuhoa_fb_ma.csv",
+    "laptop_fb_ma.csv",
+    "mayanh_fb_ma.csv",
+    "maydocsach_fb_ma.csv",
+    "maygiat_fb_ma.csv",
+    "maytinhbang_fb_ma.csv",
+    "maytinhdeban_fb_ma.csv",
     "tivi_fb_ma.csv",
     "tulanh_fb_ma.csv"
 ]
@@ -87,6 +87,9 @@ def get_total_feedback_pages(product_id):
     }
 
     response = requests.get(url, headers=headers, params=params)
+    
+    time.sleep(0.3)
+
     if response.status_code == 200:
         data = response.json()
         last_page = data.get("paging", {}).get("last_page", 0)
@@ -106,6 +109,8 @@ def get_feedbacks(product_id, pages):
             "seller_id": "1"
         }
         response = requests.get("https://tiki.vn/api/v2/reviews", headers=headers, params=params)
+
+        time.sleep(0.5)
 
         if response.status_code == 200:
             data = response.json()
@@ -164,7 +169,7 @@ for item in id_product_file:
         print(f'Lấy sản phẩm id = {id}')
         max_page = 3 
         get_feedbacks(id,max_page)
-        time.sleep(0.5)
+        time.sleep(1.0)
 
     filename = feedback_file[file_index]
     filename_2 = feedback_manager_file[file_index]
@@ -179,4 +184,5 @@ for item in id_product_file:
     df2.to_csv(file_path2, index=False, sep=',', encoding='utf-8-sig')
     print(f"Đã lưu {len(All_feedback)} feedback vào '{file_path}'\n")
     print(f"Đã lưu {len(All_manager_feedback)} feedback vào '{file_path2}'\n")
+    time.sleep(2.0)
 
