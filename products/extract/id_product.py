@@ -1,8 +1,10 @@
+import re
+import os
+import time
+import pandas
 import requests
 from bs4 import BeautifulSoup
-import pandas
-import re
-import time
+
 
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
@@ -45,7 +47,6 @@ custom_filenames = [
     "tulanh_id.csv"
 ]
 
-file_index = 0
 All_id_product = []
 
 def remove_html_tags(text):
@@ -61,6 +62,7 @@ def clean_special_char(s):
 
 
 def get_tiki_products(urlKey, category, page):
+    global All_id_product
     params = {
         "limit": "40",
         "include": "advertisement",
@@ -86,27 +88,28 @@ def get_tiki_products(urlKey, category, page):
         return False
 
 #-Main-
+def get_id_product(current_dir: str):
+    global All_id_product
+    for index, item in enumerate(payload):
+        All_id = {"id": []}
+        All_id_product = []
+        print(f"Danh mục: {item["urlKey"]} (category: {item["category"]})")   
 
-for item in payload:
-    All_id = {"id": []}
-    All_id_product = []
-    print(f"Danh mục: {item["urlKey"]} (category: {item["category"]})")   
+        # max_pages = get_max_pages(item['urlKey'], item['category'])
+        max_pages = 10
+        for i in range(1, max_pages +1 ):
+            print(f"Trang {i}")
+            get_tiki_products(item['urlKey'], item['category'], page=i)
+            time.sleep(0.3)
 
-    # max_pages = get_max_pages(item['urlKey'], item['category'])
-    max_pages = 10
-    for i in range(1, max_pages +1 ):
-        print(f"Trang {i}")
-        get_tiki_products(item['urlKey'], item['category'], page=i)
-        time.sleep(0.3)
+        All_id["id"] = All_id_product
 
-    All_id["id"] = All_id_product
+        filename = custom_filenames[index]
 
-    filename = custom_filenames[file_index]
-    file_index += 1
+        df = pandas.DataFrame(All_id)
+        file_path = os.path.join(current_dir, "rawData", "id", filename)
+        # file_path = f"../data/id/{filename}"
+        df.to_csv(file_path, index=False, sep=',', encoding='utf-8-sig')
+        print(f"Đã lưu {len(All_id)} sản phẩm vào '{file_path}'\n")
 
-    df = pandas.DataFrame(All_id)
-    file_path = f"../data/id/{filename}"
-    df.to_csv(file_path, index=False, sep=',', encoding='utf-8-sig')
-    print(f"Đã lưu {len(All_id)} sản phẩm vào '{file_path}'\n")
-
-    time.sleep(2.0)
+        time.sleep(2.0)

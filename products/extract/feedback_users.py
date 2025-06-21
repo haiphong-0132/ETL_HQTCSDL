@@ -4,6 +4,7 @@ import pandas
 import re
 import time
 import os
+import random
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
     "Referer":"https://tiki.vn",
@@ -99,6 +100,7 @@ def get_total_feedback_pages(product_id):
         return 0
 
 def get_feedbacks(product_id, pages):
+    global All_feedback, All_manager_feedback
     for page in range(1, pages+1):
         params = {
             "limit": 5,
@@ -154,35 +156,38 @@ def get_feedbacks(product_id, pages):
 
 #-Main-
 
-for item in id_product_file:
-    print(f"Đang mở file {item}")
-    id_file = pandas.read_csv(f"../data/id/{item}")
-    
-    All_id_product = []
-    for id in id_file["id"]:
-        All_id_product.append(id)
+def get_feedback_users(current_dir: str):
+    global All_feedback, All_manager_feedback
 
-    All_feedback = []
-    All_manager_feedback = []
+    for index, item in enumerate(id_product_file):
+        print(f"Đang mở file {item}")
+        id_file = pandas.read_csv(os.path.join(current_dir, "rawData", "id", item), encoding='utf-8-sig')
+        
+        All_id_product = []
+        for id in id_file["id"]:
+            All_id_product.append(id)
 
-    for id in All_id_product:
-        print(f'Lấy sản phẩm id = {id}')
-        max_page = 3 
-        get_feedbacks(id,max_page)
-        time.sleep(1.0)
+        All_feedback = []
+        All_manager_feedback = []
 
-    filename = feedback_file[file_index]
-    filename_2 = feedback_manager_file[file_index]
+        for id in All_id_product:
+            print(f'Lấy sản phẩm id = {id}')
+            max_page = 3 
+            get_feedbacks(id,max_page)
+            time.sleep(random.randint(15, 20)/10)
 
-    file_index += 1
-    df = pandas.DataFrame(All_feedback)
-    df2 = pandas.DataFrame(All_manager_feedback)
+        filename = feedback_file[index]
+        filename_2 = feedback_manager_file[index]
 
-    file_path = f"../data/feedback/{filename}"
-    file_path2 = f"../data/feedback_manager/{filename_2}"
-    df.to_csv(file_path, index=False, sep=',', encoding='utf-8-sig')
-    df2.to_csv(file_path2, index=False, sep=',', encoding='utf-8-sig')
-    print(f"Đã lưu {len(All_feedback)} feedback vào '{file_path}'\n")
-    print(f"Đã lưu {len(All_manager_feedback)} feedback vào '{file_path2}'\n")
-    time.sleep(2.0)
+        df = pandas.DataFrame(All_feedback)
+        df2 = pandas.DataFrame(All_manager_feedback)
+
+        file_path = os.path.join(current_dir, "rawData", "feedback_", filename)
+        file_path2 = os.path.join(current_dir, "rawData", "feedback_manager_", filename_2)
+
+        df.to_csv(file_path, index=False, sep=',', encoding='utf-8-sig')
+        df2.to_csv(file_path2, index=False, sep=',', encoding='utf-8-sig')
+        print(f"Đã lưu {len(All_feedback)} feedback vào '{file_path}'\n")
+        print(f"Đã lưu {len(All_manager_feedback)} feedback vào '{file_path2}'\n")
+        time.sleep(random.randint(20, 40)/10)
 

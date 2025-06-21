@@ -4,6 +4,7 @@ import pandas
 import re
 import time
 import random
+import os
 
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
@@ -31,7 +32,7 @@ id_product_file = [
 ]
 
 custom_filenames = [
-    "camera.csv",
+    "cameragiamsat.csv",
     "dienthoai.csv",
     "dienthoaiban.csv",
     "dienthoaiphothong.csv",
@@ -63,9 +64,11 @@ def clean_special_char(s):
     return cleaned.strip()
 
 def get_product_link(id):
-    url = f"https://tiki.vn/api/v2/products/{id}?platform=web&version=3"           ##query ngắn nên viết pẹ link luôn, ko dùng params nữa
+    global All_product_info
+
+    url = f"https://tiki.vn/api/v2/products/{id}?platform=web&version=3"       
     response = requests.get(url, headers=headers)
-    time.sleep(random.randint(3, 8)/ 10)
+    time.sleep(random.randint(8, 15)/ 10)
     if response.status_code == 200:
         data = response.json()
         name = data.get("name", "Không có tên").strip()                                    
@@ -130,26 +133,29 @@ def get_product_link(id):
         print(len(All_product_info))
 
 #-Main-
+def get_info_product(current_dir: str):
+    global All_product_info, All_id_product
 
-for item in id_product_file:
-    print(f"Đang mở file {item}")
-    id_file = pandas.read_csv(f"../data/id/{item}")
+    for index, item in enumerate(id_product_file):
+        print(f"Đang mở file {item}")
+        id_file = pandas.read_csv(os.path.join(current_dir, "rawData", "id", item), encoding='utf-8-sig')
 
-    All_id_product = []
-    for id in id_file["id"]:
-        All_id_product.append(id)
-    
-    All_product_info = []
+        All_id_product = []
+        for id in id_file["id"]:
+            All_id_product.append(id)
+        
+        All_product_info = []
 
-    for id in All_id_product:
-        print(f'Lấy sản phẩm id = {id}')
-        get_product_link(id)
-        time.sleep(random.randint(5, 15)/10)
+        for id in All_id_product:
+            print(f'Lấy sản phẩm id = {id}')
+            get_product_link(id)
+            time.sleep(random.randint(20, 40)/10)
 
-    filename = custom_filenames[file_index]
-    file_index += 1
-    df = pandas.DataFrame(All_product_info)
-    file_path = f"../data/product/{filename}"
-    df.to_csv(file_path, index=False, sep=',', encoding='utf-8-sig')
-    print(f"Đã lưu {len(All_product_info)} sản phẩm vào '{file_path}'\n")
-    time.sleep(random.randint(30, 60)/10)
+        filename = custom_filenames[index]
+        df = pandas.DataFrame(All_product_info)
+
+        file_path = os.path.join(current_dir, "rawData", "products_", filename)
+
+        df.to_csv(file_path, index=False, sep=',', encoding='utf-8-sig')
+        print(f"Đã lưu {len(All_product_info)} sản phẩm vào '{file_path}'\n")
+        time.sleep(random.randint(300, 600)/10)

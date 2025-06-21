@@ -9,10 +9,14 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from prefect import flow, task
 from prefect.cache_policies import NONE as NO_CACHE
+from extract.id_product import get_id_product
+from extract.info_product import get_info_product
+from extract.feedback_users import get_feedback_users
+
+
 load_dotenv()
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-
 
 RANDOM_SEED = 42
 FIXED_CURRENT_DATE_AND_TIME = "2025-06-20 00:00:00"
@@ -185,6 +189,24 @@ def check_status(start_date: str, end_date: str, current_date: str = FIXED_CURRE
         return 'Inactive'
     else:
         return 'Expired'
+    
+@task(name="crawl id of products", retries=3, retry_delay_seconds=5)
+def crawl_id_product(current_dir: str):
+    get_id_product(current_dir)
+
+    return True
+
+@task(name="crawl product infomation", retries=3, retry_delay_seconds=5)
+def crawl_product_info(current_dir: str):
+    get_info_product(current_dir)
+
+    return True
+
+@task(name="crawl feedback of customers and responses of manager", retries=3, retry_delay_seconds=5)
+def crawl_feedback_users(current_dir: str):
+    get_feedback_users(current_dir)
+
+    return True
 
 @task(name="read_product_csv_file", retries=3, retry_delay_seconds=5)
 def read_product_csv_file():
@@ -1835,6 +1857,16 @@ def close_conn(conn: pyodbc.Connection):
 
 @flow(name="ETL Pipeline")
 def etl_pipeline():
+    crawl_id_product.submit(current_dir).result()
+    crawl_product_info_result = crawl_product_info.submit(current_dir)
+    crawl_feedback_users_result = crawl_feedback_users.submit(current_dir)
+
+    if  not crawl_product_info_result.result() or not crawl_feedback_users_result.result():
+        print("Crawling data failed. Please check the logs for more details.")
+        return
+    
+    print("Crawling data completed successfully.")
+
     product_dataframes = read_product_csv_file()
     product_dataframes = remove_missing_and_duplicate_values(product_dataframes)
     
@@ -1911,24 +1943,6 @@ def etl_pipeline():
         order_history_df
     ) = create_df_related_to_order.submit(feedback_df, customer_df, product_variant_df, manager_df, variant_id_to_voucher).result().values()
 
-    print("Category DataFrame:")
-    print(category_df_result.to_csv(os.path.join(current_dir, 'category_df.csv'), index=False))
-    print("Product Variant DataFrame:")
-    print(product_variant_df.to_csv(os.path.join(current_dir, 'product_variant_df.csv'), index=False))
-
-    print("Discount DataFrame:")
-    print(discount_df.to_csv(os.path.join(current_dir, 'discount_df.csv'), index=False))
-
-    print("Feedback DataFrame:")
-    print(feedback_df.to_csv(os.path.join(current_dir, 'feedback_df.csv'), index=False))
-
-    print("Feedback Response DataFrame:")
-    print(feedback_response_df.result().to_csv(os.path.join(current_dir, 'feedback_response_df.csv'), index=False))
-
-    print("Order DataFrame:")
-    print(order_df.to_csv(os.path.join(current_dir, 'order_df.csv'), index=False))
-
-
     save_category_df.submit(category_df).result()
     save_product_df.submit(product_df).result()
     save_attribute_df.submit(attribute_df).result()
@@ -1958,8 +1972,8 @@ def etl_pipeline():
 
     
 if __name__ == "__main__":
-    # etl_pipeline.serve(
-    #     name="ETL Pipeline",
-    #     cron="*/5 * * * *",
-    # )
-    etl_pipeline()
+    etl_pipeline.serve(
+        name="ETL Pipeline",
+        cron="0 */8 * * *",
+    )
+    # etl_pipeline()
