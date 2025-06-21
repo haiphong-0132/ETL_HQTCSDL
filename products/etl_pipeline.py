@@ -24,6 +24,8 @@ FIXED_CURRENT_DATE = datetime.strptime(FIXED_CURRENT_DATE_AND_TIME, '%Y-%m-%d %H
 
 DB_NAME = os.getenv("DB_NAME")
 
+time_now = datetime.now()
+
 random_generator = random.Random(RANDOM_SEED)
 
 def get_db_connection(DB_NAME:str):
@@ -191,20 +193,20 @@ def check_status(start_date: str, end_date: str, current_date: str = FIXED_CURRE
         return 'Expired'
     
 @task(name="crawl id of products", retries=3, retry_delay_seconds=5)
-def crawl_id_product(current_dir: str):
-    get_id_product(current_dir)
+def crawl_id_product(current_dir: str, time_now: datetime):
+    get_id_product(current_dir, time_now)
 
     return True
 
 @task(name="crawl product infomation", retries=3, retry_delay_seconds=5)
-def crawl_product_info(current_dir: str):
-    get_info_product(current_dir)
+def crawl_product_info(current_dir: str, time_now: datetime):
+    get_info_product(current_dir, time_now)
 
     return True
 
 @task(name="crawl feedback of customers and responses of manager", retries=3, retry_delay_seconds=5)
-def crawl_feedback_users(current_dir: str):
-    get_feedback_users(current_dir)
+def crawl_feedback_users(current_dir: str, time_now: datetime):
+    get_feedback_users(current_dir, time_now)
 
     return True
 
@@ -1857,9 +1859,9 @@ def close_conn(conn: pyodbc.Connection):
 
 @flow(name="ETL Pipeline")
 def etl_pipeline():
-    crawl_id_product.submit(current_dir).result()
-    crawl_product_info_result = crawl_product_info.submit(current_dir)
-    crawl_feedback_users_result = crawl_feedback_users.submit(current_dir)
+    crawl_id_product.submit(current_dir, time_now).result()
+    crawl_product_info_result = crawl_product_info.submit(current_dir, time_now)
+    crawl_feedback_users_result = crawl_feedback_users.submit(current_dir, time_now)
 
     if  not crawl_product_info_result.result() or not crawl_feedback_users_result.result():
         print("Crawling data failed. Please check the logs for more details.")
@@ -1972,8 +1974,8 @@ def etl_pipeline():
 
     
 if __name__ == "__main__":
-    etl_pipeline.serve(
-        name="ETL Pipeline",
-        cron="0 */8 * * *",
-    )
-    # etl_pipeline()
+    # etl_pipeline.serve(
+    #     name="ETL Pipeline",
+    #     cron="0 */8 * * *",
+    # )
+    etl_pipeline()

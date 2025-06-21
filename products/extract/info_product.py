@@ -5,6 +5,7 @@ import re
 import time
 import random
 import os
+from datetime import datetime
 
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
@@ -133,8 +134,11 @@ def get_product_link(id):
         print(len(All_product_info))
 
 #-Main-
-def get_info_product(current_dir: str):
+def get_info_product(current_dir: str, backup_time: datetime):
     global All_product_info, All_id_product
+
+    backup_time = backup_time.strftime("%Y%m%d_%H%M%S")
+    backup_folder = os.path.join(current_dir, "backup", backup_time)
 
     for index, item in enumerate(id_product_file):
         print(f"Đang mở file {item}")
@@ -158,4 +162,7 @@ def get_info_product(current_dir: str):
 
         df.to_csv(file_path, index=False, sep=',', encoding='utf-8-sig')
         print(f"Đã lưu {len(All_product_info)} sản phẩm vào '{file_path}'\n")
+
+        df.to_csv(os.path.join(backup_folder, filename), index=False, sep=',', encoding='utf-8-sig')
+
         time.sleep(random.randint(300, 600)/10)

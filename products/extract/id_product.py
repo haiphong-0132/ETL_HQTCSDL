@@ -4,7 +4,7 @@ import time
 import pandas
 import requests
 from bs4 import BeautifulSoup
-
+from datetime import datetime
 
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
@@ -88,8 +88,13 @@ def get_tiki_products(urlKey, category, page):
         return False
 
 #-Main-
-def get_id_product(current_dir: str):
+def get_id_product(current_dir: str, backup_time: datetime):
     global All_id_product
+    backup_time = backup_time.strftime("%Y%m%d_%H%M%S")
+    backup_folder = os.path.join(current_dir, "backup", backup_time)
+    os.makedirs(backup_folder, exist_ok=True)
+
+
     for index, item in enumerate(payload):
         All_id = {"id": []}
         All_id_product = []
@@ -111,5 +116,5 @@ def get_id_product(current_dir: str):
         # file_path = f"../data/id/{filename}"
         df.to_csv(file_path, index=False, sep=',', encoding='utf-8-sig')
         print(f"Đã lưu {len(All_id)} sản phẩm vào '{file_path}'\n")
-
+        df.to_csv(os.path.join(backup_folder, filename), index=False, sep=',', encoding='utf-8-sig')
         time.sleep(2.0)

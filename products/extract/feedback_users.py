@@ -5,6 +5,8 @@ import re
 import time
 import os
 import random
+from datetime import datetime
+
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
     "Referer":"https://tiki.vn",
@@ -156,8 +158,11 @@ def get_feedbacks(product_id, pages):
 
 #-Main-
 
-def get_feedback_users(current_dir: str):
+def get_feedback_users(current_dir: str, backup_time: datetime):
     global All_feedback, All_manager_feedback
+
+    backup_time = backup_time.strftime("%Y%m%d_%H%M%S")
+    backup_folder = os.path.join(current_dir, "backup", backup_time)
 
     for index, item in enumerate(id_product_file):
         print(f"Đang mở file {item}")
@@ -189,5 +194,8 @@ def get_feedback_users(current_dir: str):
         df2.to_csv(file_path2, index=False, sep=',', encoding='utf-8-sig')
         print(f"Đã lưu {len(All_feedback)} feedback vào '{file_path}'\n")
         print(f"Đã lưu {len(All_manager_feedback)} feedback vào '{file_path2}'\n")
+        
+        df.to_csv(os.path.join(backup_folder, filename), index=False, sep=',', encoding='utf-8-sig')
+        
         time.sleep(random.randint(20, 40)/10)
 
